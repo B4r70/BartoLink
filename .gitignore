@@ -1,0 +1,29 @@
+# --- Environment / Secrets ---
+.env
+*.env.local
+
+# --- Python ---
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+
+# --- Runtime / Logs ---
+log/*.log
+!log/.gitkeep
+
+# --- SQLite (sollte eh in /var/lib/ liegen, aber sicher ist sicher) ---
+*.db
+*.db-journal
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+
+# --- OS ---
+.DS_Store
+._*
+Thumbs.db

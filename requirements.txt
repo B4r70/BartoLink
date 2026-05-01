@@ -1,0 +1,23 @@
+# ==============================================================================
+#  BartoAI / barto-link — Python Dependencies
+# ==============================================================================
+
+# Web-Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
+# APNs-Client (sendet die eigentlichen Pushes an Apple)
+aioapns>=4.0.0
+
+# Validierung
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+
+# Config
+python-dotenv>=1.0.0
+
+# JWT (von aioapns transitive abhängig, hier explizit für eigene Helper)
+pyjwt[crypto]>=2.9.0
+
+# HTTP-Client (für Server-Side-Requests, Health-Checks)
+httpx>=0.27.0
