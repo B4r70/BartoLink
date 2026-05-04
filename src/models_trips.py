@@ -2,14 +2,15 @@
 #  # BartoAI / barto-link
 # ===========================================================================================
 #  Bereich . . . : Backend
-#  Datei . . . . : models.py
+#  Datei . . . . : models_trips.py
 #  Autor . . . . : Bartosz Stryjewski
-#  Erstellt am . : 30.04.2026
-#  Geändert am . : 04.05.2026  — Trip-Schemas für DBTicker-Erweiterung hinzugefügt
+#  Erstellt am . : 04.05.2026
 # ------------------------------------------------------------------------------------------
-#  Beschreibung  : Pydantic-Schemas für Request/Response der HTTP-API.
-#                  Trennung von SQLite-DataClasses (in tokens.py / trips.py):
-#                  hier nur API, dort die Persistenz. Frontend-Backend-Vertrag.
+#  Beschreibung  : Pydantic-Schemas für die Trip-Endpoints.
+#                  Trennung von SQLite-DataClasses (in trips.py): hier nur API.
+#
+#  Hinweis       : Inhalte am Ende von src/models.py einfügen (oder als
+#                  separate Datei und in main.py importieren — Geschmackssache).
 # ------------------------------------------------------------------------------------------
 #  (C) Copyright 2026 Bartosz Stryjewski
 #  All rights reserved
@@ -22,66 +23,6 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
-# ------------------------------------------------------------------------------
-#  /tokens/register
-# ------------------------------------------------------------------------------
-
-class TokenRegisterRequest(BaseModel):
-    """Was die iOS-App sendet, wenn sie ihren APNs-Token meldet."""
-    token: str = Field(..., min_length=64, max_length=200, description="APNs-Hex-Token")
-    bundle_id: str = Field(..., description="Bundle-ID der App, z.B. 'com.barto.bartolink'")
-    environment: Literal["sandbox", "production"]
-    device_label: Optional[str] = Field(default=None, max_length=80)
-
-
-class TokenRegisterResponse(BaseModel):
-    id: int
-    token_preview: str         # nur erste 16 Zeichen — voller Token nicht zurückspielen
-    is_active: bool
-    created_at: datetime
-    updated_at: datetime
-
-
-# ------------------------------------------------------------------------------
-#  /push
-# ------------------------------------------------------------------------------
-
-class PushRequest(BaseModel):
-    """Was Tools (dbticker, mailcontrol, …) schicken, wenn sie einen Push wollen."""
-    title: str = Field(..., max_length=200)
-    body: str = Field(..., max_length=2000)
-    source: str = Field(default="system", max_length=50, description="z.B. 'dbticker'")
-    priority: int = Field(default=5, ge=1, le=10, description="APNs-Priority")
-    sound: str = Field(default="default")
-    badge: Optional[int] = Field(default=None, ge=0)
-    meta: Optional[dict] = None
-
-
-class PushResponse(BaseModel):
-    sent_to: int
-    failed: int
-    details: list[dict]
-
-
-# ------------------------------------------------------------------------------
-#  /tokens/list (Admin)
-# ------------------------------------------------------------------------------
-
-class TokenInfo(BaseModel):
-    id: int
-    token_preview: str
-    bundle_id: str
-    environment: str
-    device_label: Optional[str]
-    created_at: datetime
-    updated_at: datetime
-    is_active: bool
-
-
-# ==============================================================================
-#  Trip-Endpoints (DBTicker-Erweiterung — Sprint 1)
-# ==============================================================================
-
 TripStatusLiteral = Literal["on_time", "delayed", "cancelled", "not_found"]
 EventTypeLiteral = Literal[
     "delay", "platform_change", "cancelled",
@@ -90,7 +31,7 @@ EventTypeLiteral = Literal[
 
 
 # ------------------------------------------------------------------------------
-#  POST /trips/events
+#  POST /trips/events  —  dbticker meldet eine neue Beobachtung
 # ------------------------------------------------------------------------------
 
 class TripEventRequest(BaseModel):
@@ -123,7 +64,7 @@ class TripEventResponse(BaseModel):
 
 
 # ------------------------------------------------------------------------------
-#  GET /trips
+#  GET /trips  —  Inbox-Liste (gruppiert pro Trip)
 # ------------------------------------------------------------------------------
 
 class TripSummary(BaseModel):
@@ -141,7 +82,7 @@ class TripSummary(BaseModel):
 
 
 # ------------------------------------------------------------------------------
-#  GET /trips/{trip_key}
+#  GET /trips/{trip_key}  —  Detail mit voller History
 # ------------------------------------------------------------------------------
 
 class TripEventEntry(BaseModel):
@@ -166,7 +107,7 @@ class TripDetailResponse(BaseModel):
 
 
 # ------------------------------------------------------------------------------
-#  POST /trips/{trip_key}/refresh
+#  POST /trips/{trip_key}/refresh  —  Manueller Refresh
 # ------------------------------------------------------------------------------
 
 class TripRefreshResponse(BaseModel):
