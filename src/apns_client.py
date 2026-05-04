@@ -46,6 +46,7 @@ class PushPayload:
     priority: int = 5               # APNs-Priority: 5 = normal, 10 = sofort
     sound: str = "default"          # 'default' oder Custom-Sound-Name
     badge: Optional[int] = None     # Nummer auf App-Icon, None = unverändert
+    meta: Optional[dict] = None     # Strukturierte Zusatzdaten für die App
 
 # ------------------------------------------------------------------------------
 #  APNs-Client (lazy)
@@ -99,19 +100,27 @@ class APNsClient:
         """
         client = self._ensure_client()
 
+        # Message-Dict aufbauen
+        message = {
+            "aps": {
+                "alert": {
+                    "title": payload.title,
+                    "body": payload.body,
+                },
+                "sound": payload.sound,
+                **({"badge": payload.badge} if payload.badge is not None else {}),
+                "mutable-content": 1,
+            },
+            "source": payload.source,
+        }
+
+        # Strukturierte Metadaten dranhängen, falls vorhanden
+        if payload.meta is not None:
+            message["meta"] = payload.meta
+
         notification = NotificationRequest(
             device_token=device_token,
-            message={
-                "aps": {
-                    "alert": {
-                        "title": payload.title,
-                        "body": payload.body,
-                    },
-                    "sound": payload.sound,
-                    **({"badge": payload.badge} if payload.badge is not None else {}),
-                },
-                "source": payload.source,
-            },
+            message=message,
             push_type=PushType.ALERT,
             priority=payload.priority,
         )

@@ -168,6 +168,7 @@ async def push(payload: PushRequest) -> PushResponse:
         priority=payload.priority,
         sound=payload.sound,
         badge=payload.badge,
+        meta=payload.meta,
     )
 
     sent = 0

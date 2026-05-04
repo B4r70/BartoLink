@@ -53,6 +53,7 @@ class PushRequest(BaseModel):
     priority: int = Field(default=5, ge=1, le=10, description="APNs-Priority")
     sound: str = Field(default="default")
     badge: Optional[int] = Field(default=None, ge=0)
+    meta: Optional[dict] = None
 
 
 class PushResponse(BaseModel):
