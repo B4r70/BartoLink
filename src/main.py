@@ -262,6 +262,7 @@ async def submit_trip_event(payload: TripEventRequest) -> TripEventResponse:
         current_platform=payload.current_platform,
         message=payload.message,
         is_manual_refresh=False,
+        event_intent=payload.event_intent, 
     )
 
     trip, event, push_visible = trips.record_event(event_input)
@@ -342,6 +343,7 @@ async def refresh_trip_endpoint(trip_key: str):
 
     throttle = rate_limit.check_and_record(trip_key)
     if not throttle.allowed:
+        assert throttle.reason is not None, "ThrottleResult mit !allowed muss reason haben"
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content=TripRefreshThrottled(

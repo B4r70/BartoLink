@@ -111,7 +111,15 @@ class TripEventRequest(BaseModel):
     status: TripStatusLiteral = "on_time"
     delay_min: Optional[int] = Field(default=None, ge=0, le=600)
     current_platform: Optional[str] = Field(default=None, max_length=20)
+    # DBTicker Hint: Filter umgehen oder nicht? — z.B. bei All-Clear/Entwarnung, damit die Pushs trotzdem rausgehen.
     message: Optional[str] = Field(default=None, max_length=500)
+    event_intent: Literal["regular", "force_push"] = Field(
+        default="regular",
+        description=(
+            "dbticker-Hint, ob das Event den BartoLink-Filter umgehen soll. "
+            "'force_push' bei All-Clear/Entwarnung, sonst 'regular'."
+        ),
+    )
 
 
 class TripEventResponse(BaseModel):

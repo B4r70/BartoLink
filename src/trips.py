@@ -65,6 +65,15 @@ EventType = Literal[
     "manual_refresh",   # Nutzer hat Refresh-Button gedrückt
 ]
 
+# Mapping Status → Event-Type. Als Modul-Konstante mit explizitem Type-Hint,
+# damit Pyright die EventType-Literale durch den Dict-Lookup hindurch verfolgt.
+_STATUS_TO_EVENT_TYPE: dict[TripStatus, EventType] = {
+    "delayed": "delay",
+    "cancelled": "cancelled",
+    "on_time": "on_time",
+    "not_found": "not_found",
+}
+
 
 # ------------------------------------------------------------------------------
 #  Datamodel
@@ -215,6 +224,10 @@ class TripEventInput:
     # Wenn True: Event ist ein manueller Refresh (auch wenn nichts neu ist)
     is_manual_refresh: bool = False
 
+    # NEU: Hint von dbticker. "force_push" überspringt den Initial-on_time-Filter
+    # (z.B. für All-Clear-Meldungen, die explizit gewollt sind).
+    event_intent: Literal["regular", "force_push"] = "regular"
+
 
 def build_trip_key(train_number: str, departure_date: str, route_id: str) -> str:
     """Konstruiert den Trip-Key nach vereinbartem Format.
@@ -307,6 +320,7 @@ def record_event(event: TripEventInput) -> tuple[TripUpdate, TripEvent, bool]:
             ),
         )
         event_id = cursor.lastrowid
+        assert event_id is not None, "INSERT INTO trip_events lieferte keine lastrowid"
 
         # --- Resultat zusammenbauen für Return ---
         trip = _row_to_trip(con.execute(
@@ -349,13 +363,11 @@ def _classify_event(
     if new.is_manual_refresh:
         return ("manual_refresh", False)
 
-    # Welcher event_type passt zum neuen Status?
-    event_type: EventType = {
-        "delayed": "delay",
-        "cancelled": "cancelled",
-        "on_time": "on_time",
-        "not_found": "not_found",
-    }[new.status]
+    event_type: EventType = _STATUS_TO_EVENT_TYPE[new.status]
+
+    # Force-Push überspringt alle weiteren Filter.
+    if new.event_intent == "force_push":
+        return (event_type, True)
 
     # --- Erstmeldung ---
     if prev_row is None:
