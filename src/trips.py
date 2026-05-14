@@ -110,6 +110,25 @@ class TripEvent:
     pushed_visible: bool                   # wurde dafür ein sichtbarer Push verschickt?
     received_at: datetime
 
+@dataclass
+class TripObservation:
+    """Eine einzelne Roh-Messung — eine Zeile in trip_observations."""
+    id: int
+    trip_key: str
+    route_id: str
+    train_number: str
+    line: str
+    planned_departure: str
+    departure_date: str
+
+    status: TripStatus
+    delay_min: Optional[int]
+    current_platform: Optional[str]
+    planned_platform: Optional[str]
+    raw_message: Optional[str]
+
+    observed_at: datetime
+    minutes_to_departure: Optional[int]
 
 # ------------------------------------------------------------------------------
 #  Connection-Handling
@@ -180,8 +199,33 @@ CREATE TABLE IF NOT EXISTS trip_events (
 
 CREATE INDEX IF NOT EXISTS idx_trip_events_trip
     ON trip_events(trip_key, received_at DESC);
-"""
+    
+-- ==========================================================================
+--  trip_observations: Rohdaten-Historie für Analyse-Zwecke.
+-- ==========================================================================
+CREATE TABLE IF NOT EXISTS trip_observations (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    trip_key             TEXT NOT NULL,
+    route_id             TEXT NOT NULL,
+    train_number         TEXT NOT NULL,
+    line                 TEXT NOT NULL,
+    planned_departure    TEXT NOT NULL,
+    departure_date       TEXT NOT NULL,
+    status               TEXT NOT NULL CHECK(status IN
+                             ('on_time','delayed','cancelled','not_found')),
+    delay_min            INTEGER,
+    current_platform     TEXT,
+    planned_platform     TEXT,
+    raw_message          TEXT,
+    observed_at          TIMESTAMP NOT NULL,
+    minutes_to_departure INTEGER
+);
 
+CREATE INDEX IF NOT EXISTS idx_observations_date_route
+    ON trip_observations(departure_date, route_id);
+CREATE INDEX IF NOT EXISTS idx_observations_trip_time
+    ON trip_observations(trip_key, observed_at);
+"""
 
 def init_db() -> None:
     """Initialisiert das Trip-Schema, falls die DB neu ist.
@@ -224,9 +268,17 @@ class TripEventInput:
     # Wenn True: Event ist ein manueller Refresh (auch wenn nichts neu ist)
     is_manual_refresh: bool = False
 
-    # NEU: Hint von dbticker. "force_push" überspringt den Initial-on_time-Filter
-    # (z.B. für All-Clear-Meldungen, die explizit gewollt sind).
-    event_intent: Literal["regular", "force_push"] = "regular"
+    # Hint von dbticker. Steuert, wie BartoLink mit dem Event umgeht:
+    #   - "regular": normale Klassifizierung in trip_events + ggf. Push
+    #   - "force_push": überspringt den Initial-on_time-Filter (All-Clear)
+    #   - "silent_observation": nur in trip_observations + trip_updates,
+    #     KEIN trip_events-Eintrag, KEIN Push
+    event_intent: Literal["regular", "force_push", "silent_observation"] = "regular"
+    # Wie viele Minuten waren es zum Zeitpunkt der Messung noch
+    # bis zur planmäßigen Abfahrt? Wird von dbticker mitgeschickt
+    # und in trip_observations.minutes_to_departure abgelegt.
+    # Negativer Wert = Messung erfolgte nach planmäßiger Abfahrt.
+    minutes_to_departure: Optional[int] = None
 
 
 def build_trip_key(train_number: str, departure_date: str, route_id: str) -> str:
@@ -238,6 +290,62 @@ def build_trip_key(train_number: str, departure_date: str, route_id: str) -> str
     """
     return f"{train_number}_{departure_date}_{route_id}"
 
+def _upsert_trip(
+    con: sqlite3.Connection,
+    *,
+    trip_key: str,
+    event: TripEventInput,
+    prev_row: Optional[sqlite3.Row],
+    now: datetime,
+) -> None:
+    """INSERT oder UPDATE auf trip_updates, je nachdem ob der Trip neu ist.
+
+    Idempotent in dem Sinne, dass mehrfache Aufrufe mit denselben Daten
+    keinen anderen DB-Zustand erzeugen.
+    """
+    if prev_row is None:
+        con.execute(
+            """
+            INSERT INTO trip_updates (
+                trip_key, line, train_number, direction, route_id,
+                planned_departure, current_status, current_delay_min,
+                current_platform, planned_platform,
+                departure_station, arrival_station,
+                last_update_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trip_key, event.line, event.train_number, event.direction,
+                event.route_id, event.planned_departure, event.status,
+                event.delay_min, event.current_platform, event.planned_platform,
+                event.departure_station, event.arrival_station,
+                now, now,
+            ),
+        )
+    else:
+        con.execute(
+            """
+            UPDATE trip_updates
+               SET line               = ?,
+                   direction          = ?,
+                   planned_departure  = ?,
+                   current_status     = ?,
+                   current_delay_min  = ?,
+                   current_platform   = ?,
+                   planned_platform   = COALESCE(?, planned_platform),
+                   departure_station  = COALESCE(?, departure_station),
+                   arrival_station    = COALESCE(?, arrival_station),
+                   last_update_at     = ?
+             WHERE trip_key = ?
+            """,
+            (
+                event.line, event.direction, event.planned_departure,
+                event.status, event.delay_min, event.current_platform,
+                event.planned_platform,
+                event.departure_station, event.arrival_station,
+                now, trip_key,
+            ),
+        )
 
 def record_event(event: TripEventInput) -> tuple[TripUpdate, TripEvent, bool]:
     """Speichert ein neues Event und upsertet den Trip.
@@ -260,6 +368,12 @@ def record_event(event: TripEventInput) -> tuple[TripUpdate, TripEvent, bool]:
 
         # --- Push-Entscheidung treffen ---
         event_type, push_visible = _classify_event(prev_row, event)
+
+        # --- Trip upserten ---
+        _upsert_trip(con, trip_key=trip_key, event=event, prev_row=prev_row, now=now)
+
+        # --- Rohdaten-Beobachtung protokollieren (unabhängig von Push-Logik) ---
+        _insert_observation(con, trip_key=trip_key, event=event, now=now)
 
         # --- Trip upserten ---
         if prev_row is None:
@@ -305,7 +419,7 @@ def record_event(event: TripEventInput) -> tuple[TripUpdate, TripEvent, bool]:
                     now, trip_key,
                 ),
             )
-
+        _insert_observation(con, trip_key=trip_key, event=event, now=now) 
         # --- Event in History eintragen ---
         cursor = con.execute(
             """
@@ -345,6 +459,41 @@ def record_event(event: TripEventInput) -> tuple[TripUpdate, TripEvent, bool]:
     )
     return trip, trip_event, push_visible
 
+def record_silent_observation(event: TripEventInput) -> TripUpdate:
+    """Variante von record_event für reine Statistik-Beobachtungen.
+
+    Im Unterschied zu record_event:
+      - schreibt KEINEN Eintrag in trip_events (keine Banner-Historie)
+      - verschickt KEINEN Push (egal was klassifiziert würde)
+      - aktualisiert aber trip_updates (Inbox bleibt "lebendig")
+      - schreibt eine Zeile in trip_observations (Analyse-Daten)
+
+    Genutzt von dbticker, wenn der Routine-Check keine Push-relevante
+    Änderung gefunden hat, das Ergebnis aber trotzdem für die Statistik
+    erhalten bleiben soll.
+    """
+    trip_key = build_trip_key(event.train_number, event.departure_date, event.route_id)
+    now = datetime.now(BERLIN)
+
+    with _conn() as con:
+        prev_row = con.execute(
+            "SELECT * FROM trip_updates WHERE trip_key = ?",
+            (trip_key,),
+        ).fetchone()
+
+        _upsert_trip(con, trip_key=trip_key, event=event, prev_row=prev_row, now=now)
+        _insert_observation(con, trip_key=trip_key, event=event, now=now)
+
+        trip = _row_to_trip(con.execute(
+            "SELECT * FROM trip_updates WHERE trip_key = ?",
+            (trip_key,),
+        ).fetchone())
+
+    logger.info(
+        "Silent observation: trip=%s, status=%s, delay=%s",
+        trip_key, event.status, event.delay_min,
+    )
+    return trip
 
 def _classify_event(
     prev_row: Optional[sqlite3.Row],
@@ -401,6 +550,39 @@ def _classify_event(
     # Sonst: silent
     return (event_type, False)
 
+
+def _insert_observation(
+    con: sqlite3.Connection,
+    *,
+    trip_key: str,
+    event: TripEventInput,
+    now: datetime,
+) -> int:
+    """Schreibt eine Roh-Beobachtung in trip_observations.
+
+    Wird innerhalb von record_event() in derselben Transaktion aufgerufen —
+    damit Event und Observation atomar zusammen committen.
+    """
+    cursor = con.execute(
+        """
+        INSERT INTO trip_observations (
+            trip_key, route_id, train_number, line,
+            planned_departure, departure_date,
+            status, delay_min, current_platform, planned_platform,
+            raw_message, observed_at, minutes_to_departure
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            trip_key, event.route_id, event.train_number, event.line,
+            event.planned_departure, event.departure_date,
+            event.status, event.delay_min, event.current_platform,
+            event.planned_platform, event.message,
+            now, event.minutes_to_departure,
+        ),
+    )
+    obs_id = cursor.lastrowid
+    assert obs_id is not None, "INSERT INTO trip_observations lieferte keine lastrowid"
+    return obs_id
 
 # ------------------------------------------------------------------------------
 #  Lese-Funktionen

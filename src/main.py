@@ -246,6 +246,10 @@ async def submit_trip_event(payload: TripEventRequest) -> TripEventResponse:
 
     Aggregations-Logik in trips.record_event entscheidet, ob ein sichtbarer
     Push raus geht. Falls ja, wird APNs an alle aktiven Tokens versendet.
+
+    Sonderfall event_intent="silent_observation":
+        Reine Statistik-Beobachtung — kein trip_event, kein Push, nur ein
+        trip_observations-Eintrag und ein last_update_at-Touch.
     """
     event_input = TripEventInput(
         train_number=payload.train_number,
@@ -262,9 +266,20 @@ async def submit_trip_event(payload: TripEventRequest) -> TripEventResponse:
         current_platform=payload.current_platform,
         message=payload.message,
         is_manual_refresh=False,
-        event_intent=payload.event_intent, 
+        event_intent=payload.event_intent,
     )
 
+    # --- Silent observation: früh raus, kein Event, kein Push ---
+    if payload.event_intent == "silent_observation":
+        trip = trips.record_silent_observation(event_input)
+        return TripEventResponse(
+            trip_key=trip.trip_key,
+            event_type="on_time",   # Dummy — Client nutzt den Wert nicht
+            push_sent=False,
+            push_recipients=0,
+        )
+
+    # --- Regulärer Pfad: klassifizieren, eintragen, ggf. pushen ---
     trip, event, push_visible = trips.record_event(event_input)
 
     push_recipients = 0

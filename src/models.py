@@ -113,11 +113,12 @@ class TripEventRequest(BaseModel):
     current_platform: Optional[str] = Field(default=None, max_length=20)
     # DBTicker Hint: Filter umgehen oder nicht? — z.B. bei All-Clear/Entwarnung, damit die Pushs trotzdem rausgehen.
     message: Optional[str] = Field(default=None, max_length=500)
-    event_intent: Literal["regular", "force_push"] = Field(
+    event_intent: Literal["regular", "force_push", "silent_observation"] = Field(
         default="regular",
         description=(
-            "dbticker-Hint, ob das Event den BartoLink-Filter umgehen soll. "
-            "'force_push' bei All-Clear/Entwarnung, sonst 'regular'."
+            "dbticker-Hint, wie das Event behandelt werden soll. "
+            "'force_push' = umgeht den Filter (All-Clear). "
+            "'silent_observation' = nur Statistik, kein Event/Push."
         ),
     )
 
