@@ -375,51 +375,6 @@ def record_event(event: TripEventInput) -> tuple[TripUpdate, TripEvent, bool]:
         # --- Rohdaten-Beobachtung protokollieren (unabhängig von Push-Logik) ---
         _insert_observation(con, trip_key=trip_key, event=event, now=now)
 
-        # --- Trip upserten ---
-        if prev_row is None:
-            con.execute(
-                """
-                INSERT INTO trip_updates (
-                    trip_key, line, train_number, direction, route_id,
-                    planned_departure, current_status, current_delay_min,
-                    current_platform, planned_platform,
-                    departure_station, arrival_station,
-                    last_update_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    trip_key, event.line, event.train_number, event.direction,
-                    event.route_id, event.planned_departure, event.status,
-                    event.delay_min, event.current_platform, event.planned_platform,
-                    event.departure_station, event.arrival_station,
-                    now, now,
-                ),
-            )
-        else:
-            con.execute(
-                """
-                UPDATE trip_updates
-                   SET line               = ?,
-                       direction          = ?,
-                       planned_departure  = ?,
-                       current_status     = ?,
-                       current_delay_min  = ?,
-                       current_platform   = ?,
-                       planned_platform   = COALESCE(?, planned_platform),
-                       departure_station  = COALESCE(?, departure_station),
-                       arrival_station    = COALESCE(?, arrival_station),
-                       last_update_at     = ?
-                 WHERE trip_key = ?
-                """,
-                (
-                    event.line, event.direction, event.planned_departure,
-                    event.status, event.delay_min, event.current_platform,
-                    event.planned_platform,
-                    event.departure_station, event.arrival_station,
-                    now, trip_key,
-                ),
-            )
-        _insert_observation(con, trip_key=trip_key, event=event, now=now) 
         # --- Event in History eintragen ---
         cursor = con.execute(
             """

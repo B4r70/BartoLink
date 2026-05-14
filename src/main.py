@@ -267,6 +267,7 @@ async def submit_trip_event(payload: TripEventRequest) -> TripEventResponse:
         message=payload.message,
         is_manual_refresh=False,
         event_intent=payload.event_intent,
+        minutes_to_departure=payload.minutes_to_departure,
     )
 
     # --- Silent observation: früh raus, kein Event, kein Push ---

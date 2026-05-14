@@ -122,6 +122,16 @@ class TripEventRequest(BaseModel):
         ),
     )
 
+    # NEU: Wie viele Minuten vor planmäßiger Abfahrt wurde gemessen?
+    # Negativer Wert = Messung nach planmäßiger Abfahrt. Wird zu Analyse-
+    # Zwecken in trip_observations.minutes_to_departure abgelegt.
+    minutes_to_departure: Optional[int] = Field(
+        default=None,
+        ge=-1440,
+        le=1440,
+        description="Minuten bis zur planmäßigen Abfahrt zum Messzeitpunkt.",
+    )
+
 
 class TripEventResponse(BaseModel):
     """Antwort an dbticker: was BartoLink mit dem Event gemacht hat."""
