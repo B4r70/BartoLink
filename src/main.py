@@ -376,6 +376,14 @@ async def refresh_trip_endpoint(trip_key: str):
             trip_key, trip.route_id, runner_result.return_code,
             runner_result.stderr[:500],
         )
+        if runner_result.error_kind == "route_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    f"Route nicht (mehr) in routes.toml: {trip.route_id}. "
+                    "Der Trip wird wahrscheinlich nicht mehr aktualisiert."
+                ),
+            )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="dbticker-Aufruf fehlgeschlagen — versuch's gleich nochmal.",

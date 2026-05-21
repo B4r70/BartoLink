@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal, Optional
 
 from src.config import settings
 
@@ -45,6 +46,8 @@ class RunnerResult:
     return_code: int
     stdout: str
     stderr: str
+    # Strukturierter Fehlergrund — None bei Erfolg
+    error_kind: Optional[Literal["route_not_found", "timeout", "script_missing", "other"]] = field(default=None)
 
 
 async def run_for_route(route_id: str) -> RunnerResult:
@@ -67,6 +70,7 @@ async def run_for_route(route_id: str) -> RunnerResult:
             return_code=-1,
             stdout="",
             stderr=f"dbticker-Script nicht gefunden: {DBTICKER_SCRIPT}",
+            error_kind="script_missing",
         )
 
     logger.info("Starte dbticker für Route %s", route_id)
@@ -95,6 +99,7 @@ async def run_for_route(route_id: str) -> RunnerResult:
             return_code=-2,
             stdout="",
             stderr=f"dbticker-Timeout nach {DBTICKER_TIMEOUT_SECONDS}s",
+            error_kind="timeout",
         )
 
     stdout = stdout_b.decode("utf-8", errors="replace")
@@ -107,9 +112,17 @@ async def run_for_route(route_id: str) -> RunnerResult:
         route_id, proc.returncode, len(stdout), len(stderr),
     )
 
+    error_kind: Optional[Literal["route_not_found", "timeout", "script_missing", "other"]] = None
+    if not success:
+        if "nicht in routes.toml gefunden" in stderr:
+            error_kind = "route_not_found"
+        else:
+            error_kind = "other"
+
     return RunnerResult(
         success=success,
         return_code=proc.returncode,
         stdout=stdout,
         stderr=stderr,
+        error_kind=error_kind,
     )
