@@ -515,6 +515,8 @@ def _format_push(trip: trips.TripUpdate, event: trips.TripEvent) -> tuple[str, s
         body = "Update"
 
     body += f" · ab {trip.planned_departure}"
+    if event.message:
+        body += f"\n{event.message}"
     return title, body
 
 
