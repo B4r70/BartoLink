@@ -10,8 +10,10 @@
 #                  Wird vom /trips/{trip_key}/refresh-Endpoint aufgerufen,
 #                  wenn ein manueller Refresh erlaubt wurde.
 #
-#                  V1: Subprocess via dbticker.sh (gleicher Pfad wie systemd).
-#                  V2 (später): dbticker als Library importieren.
+#                  Ruft den dbticker-Entry-Point aus dessen venv direkt auf.
+#                  (Der frühere openclaw-Wrapper dbticker.sh ist entfallen —
+#                   barto-link läuft bereits als User barto, das sudo -u des
+#                   Wrappers war sein einziger Zweck.)
 # ------------------------------------------------------------------------------------------
 #  (C) Copyright 2026 Bartosz Stryjewski
 #  All rights reserved
@@ -30,10 +32,8 @@ from src.config import settings
 logger = logging.getLogger(__name__)
 
 
-# Pfad zum dbticker-Wrapper. Konfigurierbar via settings, mit Default.
-DBTICKER_SCRIPT = Path(
-    getattr(settings, "dbticker_script_path", "/var/lib/openclaw/skills/dbticker/dbticker.sh")
-)
+# Pfad zum dbticker-Entry-Point. Default + Override siehe src/config.py.
+DBTICKER_BIN = settings.dbticker_bin_path
 
 # Hartes Timeout, falls dbticker hängt. DB-API ist normalerweise <2s; wir geben ihm 15.
 DBTICKER_TIMEOUT_SECONDS = 15
@@ -53,9 +53,8 @@ class RunnerResult:
 async def run_for_route(route_id: str) -> RunnerResult:
     """Führt dbticker für genau eine Route aus.
 
-    Erwartet, dass dbticker.sh den Modus 'run --route <id>' unterstützt
-    (siehe Sprint 2 — dbticker-Anpassung). Bis dahin liefert das hier einen
-    return_code != 0, was als RunnerResult.success=False rauskommt.
+    dbticker-Exit-Codes: 0 = ok, 1 = Config/Credentials, 2 = Route nicht in
+    routes.toml. Alles != 0 kommt als RunnerResult.success=False raus.
 
     Args:
         route_id: dbticker-Route-Identifier (z.B. "hin-0631").
@@ -63,13 +62,13 @@ async def run_for_route(route_id: str) -> RunnerResult:
     Returns:
         RunnerResult mit success-Flag, return_code, stdout/stderr.
     """
-    if not DBTICKER_SCRIPT.exists():
-        logger.error("dbticker-Script nicht gefunden: %s", DBTICKER_SCRIPT)
+    if not DBTICKER_BIN.exists():
+        logger.error("dbticker-Binary nicht gefunden: %s", DBTICKER_BIN)
         return RunnerResult(
             success=False,
             return_code=-1,
             stdout="",
-            stderr=f"dbticker-Script nicht gefunden: {DBTICKER_SCRIPT}",
+            stderr=f"dbticker-Binary nicht gefunden: {DBTICKER_BIN}",
             error_kind="script_missing",
         )
 
@@ -77,7 +76,7 @@ async def run_for_route(route_id: str) -> RunnerResult:
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            str(DBTICKER_SCRIPT), "run", "--route", route_id,
+            str(DBTICKER_BIN), "--route", route_id,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -114,10 +113,8 @@ async def run_for_route(route_id: str) -> RunnerResult:
 
     error_kind: Optional[Literal["route_not_found", "timeout", "script_missing", "other"]] = None
     if not success:
-        if "nicht in routes.toml gefunden" in stderr:
-            error_kind = "route_not_found"
-        else:
-            error_kind = "other"
+        # rc=2 ist dbtickers Kontrakt für 'Route nicht in routes.toml'.
+        error_kind = "route_not_found" if proc.returncode == 2 else "other"
 
     return RunnerResult(
         success=success,

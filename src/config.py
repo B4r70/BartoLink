@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     server_host: str = Field(default="127.0.0.1")
     server_port: int = Field(default=8765, ge=1, le=65535)
 
+    # --- dbticker ---
+    dbticker_bin_path: Path = Field(
+        default=Path("/home/barto/developments/projects/dbticker/.venv/bin/dbticker"),
+        description="Entry-Point von dbticker; wird für den manuellen Trip-Refresh aufgerufen",
+    )
+
     # --- Datenbank ---
     database_path: Path = Field(default=Path("/var/lib/barto-link/tokens.db"))
 

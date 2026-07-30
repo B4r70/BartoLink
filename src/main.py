@@ -18,8 +18,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -29,7 +30,7 @@ from src import rate_limit, trips
 from src.apns_client import PushPayload, apns
 from src.auth import verify_token
 from src.config import settings
-from src.dbticker_runner import run_for_route
+from src.dbticker_runner import DBTICKER_BIN, run_for_route
 from src.models import (
     PushRequest,
     PushResponse,
@@ -76,6 +77,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()                # Tokens-Schema (bestehend)
     trips.init_db()          # Trip-Schema (NEU)
     rate_limit.init_db()     # Refresh-Log-Schema (NEU)
+
+    # Der manuelle Refresh hängt an dbticker. Lieber beim Start meckern als
+    # den Nutzer beim ersten Tap in einen 502 laufen lassen — genau das ist
+    # von Juni bis Juli 2026 acht Wochen lang unbemerkt passiert.
+    if not os.access(DBTICKER_BIN, os.X_OK):
+        logger.error(
+            "dbticker nicht aufrufbar: %s — der manuelle Refresh wird fehlschlagen.",
+            DBTICKER_BIN,
+        )
+
     logger.info(
         "Bereit. Bundle=%s, APNs-Env=%s, Server=%s:%d",
         settings.apple_bundle_id,
@@ -357,6 +368,17 @@ async def refresh_trip_endpoint(trip_key: str):
             detail=f"Trip nicht bekannt: {trip_key}",
         )
 
+    # dbticker prüft immer den HEUTIGEN Zug. Für eine ältere Fahrt landet
+    # das Ergebnis unter einem anderen trip_key — der Endpoint würde 200 mit
+    # unveränderten Daten liefern. Die App blockt das bereits im UI, der
+    # Server darf sich darauf aber nicht verlassen.
+    trip_date = trip_key.split("_")[1] if trip_key.count("_") >= 2 else ""
+    if trip_date != datetime.now(trips.BERLIN).strftime("%Y-%m-%d"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Diese Fahrt ist nicht von heute und kann nicht aktualisiert werden.",
+        )
+
     throttle = rate_limit.check_and_record(trip_key)
     if not throttle.allowed:
         assert throttle.reason is not None, "ThrottleResult mit !allowed muss reason haben"
@@ -369,8 +391,12 @@ async def refresh_trip_endpoint(trip_key: str):
             headers={"Retry-After": str(throttle.retry_after_seconds)},
         )
 
+    last_update_before = trip.last_update_at
+
     runner_result = await run_for_route(trip.route_id)
     if not runner_result.success:
+        # Fehlgeschlagener Refresh darf keinen Cooldown kosten.
+        rate_limit.void(throttle.row_id)
         logger.error(
             "Refresh fehlgeschlagen für trip=%s, route=%s: rc=%d, stderr=%s",
             trip_key, trip.route_id, runner_result.return_code,
@@ -391,9 +417,26 @@ async def refresh_trip_endpoint(trip_key: str):
 
     refreshed = trips.get_trip(trip_key)
     if refreshed is None:
+        rate_limit.void(throttle.row_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Trip nach Refresh nicht mehr in DB.",
+        )
+
+    # dbticker meldet rc=0 auch dann, wenn intern etwas schiefging. Ohne neues
+    # Event ist last_update_at unverändert — dann wäre die Antwort ein alter
+    # Stand mit frischem Anstrich, und next_refresh_allowed_at läge in der
+    # Vergangenheit.
+    if refreshed.last_update_at == last_update_before:
+        logger.error(
+            "Refresh ohne neuen Stand für trip=%s (route=%s): dbticker rc=0, "
+            "aber kein Event angekommen.",
+            trip_key, trip.route_id,
+        )
+        rate_limit.void(throttle.row_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Keine neuen Daten von der Bahn-API erhalten — bitte gleich nochmal versuchen.",
         )
 
     now = refreshed.last_update_at

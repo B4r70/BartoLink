@@ -66,6 +66,7 @@ class ThrottleResult:
     allowed: bool
     retry_after_seconds: int = 0        # Wenn !allowed: wann darf wieder?
     reason: Optional[ThrottleReason] = None
+    row_id: Optional[int] = None        # Wenn allowed: Zeile in refresh_log — für void()
 
 
 # ------------------------------------------------------------------------------
@@ -195,9 +196,31 @@ def check_and_record(trip_key: str) -> ThrottleResult:
             )
 
         # --- Erlaubt — loggen ---
-        _log(con, trip_key, now, throttled=False, reason=None)
+        row_id = _log(con, trip_key, now, throttled=False, reason=None)
 
-    return ThrottleResult(allowed=True)
+    return ThrottleResult(allowed=True, row_id=row_id)
+
+
+def void(row_id: Optional[int]) -> None:
+    """Nimmt eine Refresh-Buchung zurück, wenn der Refresh nicht geklappt hat.
+
+    Die Zeile bleibt für die Statistik erhalten, fällt aber aus beiden
+    Cooldown-Fenstern — beide Checks filtern auf was_throttled = 0. Ohne das
+    sperrt ein fehlgeschlagener Refresh den Trip 60 Sekunden lang, obwohl der
+    Nutzer gar keine Daten bekommen hat.
+    """
+    if row_id is None:
+        return
+    with _conn() as con:
+        con.execute(
+            """
+            UPDATE refresh_log
+               SET was_throttled = 1, throttle_reason = 'upstream_failed'
+             WHERE id = ?
+            """,
+            (row_id,),
+        )
+    logger.info("Refresh-Buchung %d zurückgenommen (Upstream-Fehler).", row_id)
 
 
 def _log(
@@ -207,12 +230,13 @@ def _log(
     *,
     throttled: bool,
     reason: Optional[ThrottleReason],
-) -> None:
-    """Schreibt eine Zeile in refresh_log."""
-    con.execute(
+) -> Optional[int]:
+    """Schreibt eine Zeile in refresh_log und gibt deren id zurück."""
+    cur = con.execute(
         """
         INSERT INTO refresh_log (trip_key, requested_at, was_throttled, throttle_reason)
         VALUES (?, ?, ?, ?)
         """,
         (trip_key, when, int(throttled), reason),
     )
+    return cur.lastrowid
