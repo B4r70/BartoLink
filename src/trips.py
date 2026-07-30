@@ -612,3 +612,136 @@ def _row_to_event(row: sqlite3.Row) -> TripEvent:
         pushed_visible=bool(row["pushed_visible"]),
         received_at=row["received_at"],
     )
+
+# ------------------------------------------------------------------------------
+#  Statistik (GET /trips/stats)
+# ------------------------------------------------------------------------------
+
+# Eine "Fahrt" ist die letzte Messung eines trip_key an einem Kalendertag.
+# Der Ticker misst alle 5 Minuten; für die Bewertung zählt der letzte Stand.
+# not_found wird erst NACH dem Ranking aussortiert — sonst würde die vorletzte
+# Messung zur Wahrheit erklärt, obwohl der Zug am Ende nicht auffindbar war.
+_FAHRTEN_CTE = """
+WITH fahrten AS (
+    SELECT trip_key, route_id, line, train_number, planned_departure,
+           departure_date, status, delay_min,
+           ROW_NUMBER() OVER (PARTITION BY trip_key, departure_date
+                              ORDER BY observed_at DESC) AS rn
+      FROM trip_observations
+)
+"""
+
+
+def stats(*, history_days: int = 30) -> dict:
+    """Aggregiert trip_observations zu Pünktlichkeits-Kennzahlen.
+
+    Args:
+        history_days: Wie viele gemessene Tage die Verlaufskurve umfasst.
+            Gezählt werden Tage MIT Messungen, nicht Kalendertage — Lücken
+            (Wochenende, Urlaub) werden nicht als Nullwerte aufgefüllt.
+
+    Returns:
+        dict passend zu models.TripStatsResponse. Bei leerer Tabelle stehen
+        alle Zähler auf 0 und die Listen sind leer.
+    """
+    with _conn() as con:
+        gesamt = con.execute(_FAHRTEN_CTE + """
+            SELECT COUNT(*) AS trips,
+                   SUM(status = 'on_time')   AS on_time,
+                   SUM(status = 'delayed')   AS delayed,
+                   SUM(status = 'cancelled') AS cancelled,
+                   AVG(CASE WHEN status = 'delayed' THEN delay_min END) AS avg_delay,
+                   MAX(delay_min) AS max_delay,
+                   MIN(departure_date) AS first_day,
+                   MAX(departure_date) AS last_day
+              FROM fahrten
+             WHERE rn = 1 AND status <> 'not_found'
+        """).fetchone()
+
+        routen = con.execute(_FAHRTEN_CTE + """
+            SELECT route_id,
+                   MAX(line) AS line,
+                   MAX(train_number) AS train_number,
+                   MAX(planned_departure) AS planned_departure,
+                   COUNT(*) AS days,
+                   SUM(status = 'on_time')   AS on_time,
+                   SUM(status = 'delayed')   AS delayed,
+                   SUM(status = 'cancelled') AS cancelled,
+                   AVG(CASE WHEN status = 'delayed' THEN delay_min END) AS avg_delay,
+                   MAX(delay_min) AS max_delay,
+                   MIN(departure_date) AS first_day,
+                   MAX(departure_date) AS last_day
+              FROM fahrten
+             WHERE rn = 1 AND status <> 'not_found'
+             GROUP BY route_id
+             ORDER BY days DESC, route_id
+        """).fetchall()
+
+        # Verlauf: die letzten N gemessenen Tage, chronologisch zurückgegeben.
+        verlauf = con.execute(_FAHRTEN_CTE + """
+            SELECT departure_date, COUNT(*) AS trips,
+                   AVG(COALESCE(delay_min, 0)) AS avg_delay
+              FROM fahrten
+             WHERE rn = 1 AND status <> 'not_found'
+             GROUP BY departure_date
+             ORDER BY departure_date DESC
+             LIMIT ?
+        """, (history_days,)).fetchall()
+
+        wochentage = con.execute(_FAHRTEN_CTE + """
+            SELECT CAST(strftime('%w', departure_date) AS INTEGER) AS wd,
+                   COUNT(*) AS days,
+                   SUM(status = 'delayed') AS delayed,
+                   AVG(CASE WHEN status = 'delayed' THEN delay_min END) AS avg_delay
+              FROM fahrten
+             WHERE rn = 1 AND status <> 'not_found'
+             GROUP BY wd
+             ORDER BY wd
+        """).fetchall()
+
+    runde = lambda v: round(v, 1) if v is not None else None
+
+    return {
+        "first_day": gesamt["first_day"],
+        "last_day": gesamt["last_day"],
+        "trips": gesamt["trips"] or 0,
+        "on_time": gesamt["on_time"] or 0,
+        "delayed": gesamt["delayed"] or 0,
+        "cancelled": gesamt["cancelled"] or 0,
+        "avg_delay_min": runde(gesamt["avg_delay"]),
+        "max_delay_min": gesamt["max_delay"],
+        "routes": [
+            {
+                "route_id": r["route_id"],
+                "line": r["line"],
+                "train_number": r["train_number"],
+                "planned_departure": r["planned_departure"],
+                "days": r["days"],
+                "on_time": r["on_time"] or 0,
+                "delayed": r["delayed"] or 0,
+                "cancelled": r["cancelled"] or 0,
+                "avg_delay_min": runde(r["avg_delay"]),
+                "max_delay_min": r["max_delay"],
+                "first_day": r["first_day"],
+                "last_day": r["last_day"],
+            }
+            for r in routen
+        ],
+        "history": [
+            {
+                "date": d["departure_date"],
+                "trips": d["trips"],
+                "avg_delay_min": round(d["avg_delay"] or 0, 1),
+            }
+            for d in reversed(verlauf)
+        ],
+        "weekdays": [
+            {
+                "weekday": w["wd"],
+                "days": w["days"],
+                "delayed": w["delayed"] or 0,
+                "avg_delay_min": runde(w["avg_delay"]),
+            }
+            for w in wochentage
+        ],
+    }

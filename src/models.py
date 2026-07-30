@@ -199,3 +199,67 @@ class TripRefreshThrottled(BaseModel):
     """Antwort bei geblocktem Refresh (HTTP 429)."""
     retry_after_seconds: int
     reason: Literal["per_trip", "global"]
+
+
+# ------------------------------------------------------------------------------
+#  GET /trips/stats
+# ------------------------------------------------------------------------------
+#  Begriffe (gelten für alle Stats-Modelle):
+#
+#    Fahrt   = letzte Messung eines trip_key an einem Kalendertag. Der Ticker
+#              misst alle 5 Minuten; gewertet wird der Stand kurz vor Abfahrt.
+#    Status  = on_time | delayed | cancelled. Messungen, deren letzter Stand
+#              not_found ist, zählen nicht mit — der Zug war nicht auffindbar,
+#              das ist keine Aussage über Pünktlichkeit.
+#
+#  Damit gilt immer: on_time + delayed + cancelled == trips.
+# ------------------------------------------------------------------------------
+
+class StatsRouteEntry(BaseModel):
+    """Pünktlichkeit einer einzelnen Route über den gesamten Zeitraum."""
+    route_id: str
+    line: str
+    train_number: str
+    planned_departure: str
+    days: int
+    on_time: int
+    delayed: int
+    cancelled: int
+    avg_delay_min: Optional[float]      # Mittel über die verspäteten Fahrten
+    max_delay_min: Optional[int]
+    first_day: str
+    last_day: str
+
+
+class StatsDayEntry(BaseModel):
+    """Ein gemessener Kalendertag — Datenpunkt der Verlaufskurve.
+
+    avg_delay_min mittelt über ALLE Fahrten des Tages, pünktliche mit 0.
+    Nur Tage mit Messungen tauchen auf; Lücken werden nicht aufgefüllt.
+    """
+    date: str
+    trips: int
+    avg_delay_min: float
+
+
+class StatsWeekdayEntry(BaseModel):
+    """Aggregat je Wochentag."""
+    weekday: int                        # 0 = Sonntag (SQLite strftime('%w'))
+    days: int
+    delayed: int
+    avg_delay_min: Optional[float]
+
+
+class TripStatsResponse(BaseModel):
+    """Pünktlichkeits-Statistik über alle beobachteten Fahrten."""
+    first_day: Optional[str]
+    last_day: Optional[str]
+    trips: int
+    on_time: int
+    delayed: int
+    cancelled: int
+    avg_delay_min: Optional[float]      # Mittel über die verspäteten Fahrten
+    max_delay_min: Optional[int]
+    routes: list[StatsRouteEntry]       # absteigend nach gemessenen Tagen
+    history: list[StatsDayEntry]        # aufsteigend nach Datum
+    weekdays: list[StatsWeekdayEntry]

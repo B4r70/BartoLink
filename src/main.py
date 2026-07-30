@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import AsyncIterator
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
 from src import rate_limit, trips
@@ -43,6 +43,7 @@ from src.models import (
     TripEventResponse,
     TripRefreshResponse,
     TripRefreshThrottled,
+    TripStatsResponse,
     TripSummary,
 )
 from src.tokens import (
@@ -322,6 +323,23 @@ async def submit_trip_event(payload: TripEventRequest) -> TripEventResponse:
 def list_trips_endpoint(limit: int = 100) -> list[TripSummary]:
     """Alle bekannten Trips, sortiert nach last_update_at DESC — für Inbox."""
     return [_to_summary(t) for t in trips.list_trips(limit=limit)]
+
+
+@app.get(
+    "/trips/stats",
+    response_model=TripStatsResponse,
+    dependencies=[Depends(verify_token)],
+)
+def trip_stats_endpoint(
+    history_days: int = Query(default=30, ge=1, le=365),
+) -> TripStatsResponse:
+    """Pünktlichkeits-Statistik über alle beobachteten Fahrten.
+
+    Muss vor /trips/{trip_key} deklariert bleiben — FastAPI matcht in
+    Deklarationsreihenfolge, sonst landet "stats" als trip_key im
+    Detail-Endpoint und der antwortet 404.
+    """
+    return TripStatsResponse(**trips.stats(history_days=history_days))
 
 
 @app.get(
